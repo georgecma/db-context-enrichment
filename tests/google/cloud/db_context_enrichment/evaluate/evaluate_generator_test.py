@@ -401,3 +401,127 @@ def test_convert_dataset_case_sensitive():
     with patch("builtins.open", mock_open(read_data=mock_dataset)):
         with pytest.raises(ValueError, match="is missing required keys"):
             _convert_dataset("/fake/dataset.json", "postgres")
+
+
+def test_generate_evalbench_configs_bigtable():
+    mock_yaml = textwrap.dedent("""\
+        ---
+        kind: source
+        name: test-bigtable-source
+        type: bigtable
+        project: test-project
+        instance: test-instance
+    """).strip()
+
+    with patch("builtins.open", mock_open(read_data=mock_yaml)) as m:
+        with patch(
+            "google.cloud.db_context_enrichment.evaluate.evaluate_generator._convert_dataset",
+            return_value='[{"mock": "data"}]',
+        ):
+            with patch(
+                "google.cloud.db_context_enrichment.evaluate.evaluate_generator.os.makedirs"
+            ) as mock_makedirs:
+                generate_evalbench_configs(
+                    experiment_name="test-exp",
+                    dataset_path="/local/path/data.json",
+                    context_set_id="projects/test-project/locations/global/contextSets/test-ctx",
+                    toolbox_config_path="/fake/tools.yaml",
+                    toolbox_source_name="test-bigtable-source",
+                )
+
+    mock_makedirs.assert_called_once_with(
+        "autoctx/experiments/test-exp/eval_configs", exist_ok=True
+    )
+
+    # Verify all file writes
+    m.assert_any_call("autoctx/experiments/test-exp/eval_configs/db_config.yaml", "w")
+    m.assert_any_call(
+        "autoctx/experiments/test-exp/eval_configs/model_config.yaml", "w"
+    )
+    m.assert_any_call("autoctx/experiments/test-exp/eval_configs/run_config.yaml", "w")
+    m.assert_any_call(
+        "autoctx/experiments/test-exp/eval_configs/llmrater_config.yaml", "w"
+    )
+    m.assert_any_call(
+        "autoctx/experiments/test-exp/eval_configs/golden_queries.json", "w"
+    )
+
+    expected_db_config = textwrap.dedent("""\
+        db_type: bigtable
+        dialect: bigtable
+        database_name: test-instance
+        database_path: projects/test-project/instances/test-instance
+        instance_id: test-instance
+        gcp_project_id: test-project
+        max_executions_per_minute: 100
+    """).strip()
+
+    expected_model_config = textwrap.dedent("""\
+        generator: query_data_api
+        project_id: test-project
+        location: global
+        context:
+          datasource_references:
+            bigtable_reference:
+              database_reference:
+                project_id: test-project
+                instance_id: test-instance
+              agent_context_reference:
+                context_set_id: projects/test-project/locations/global/contextSets/test-ctx
+    """).strip()
+
+    expected_llmrater_config = textwrap.dedent("""\
+        generator: gcp_vertex_gemini
+        vertex_model: gemini-3.1-flash-lite
+        gcp_project_id: test-project
+        gcp_region: global
+        base_prompt: ""
+        execs_per_minute: 20
+    """).strip()
+
+    expected_run_config = textwrap.dedent("""\
+        ############################################################
+        ### Dataset / Eval Items
+        ############################################################
+        dataset_config: autoctx/experiments/test-exp/eval_configs/golden_queries.json
+        dataset_format: evalbench-standard-format
+        database_configs:
+         - autoctx/experiments/test-exp/eval_configs/db_config.yaml
+        dialect: bigtable    # DB connection mapping
+        query_types:
+         - dql
+
+        ############################################################
+        ### Prompt and Generation Modules
+        ############################################################
+        model_config: autoctx/experiments/test-exp/eval_configs/model_config.yaml
+        prompt_generator: 'NOOPGenerator'
+
+        ############################################################
+        ### Evaluator Execution / Parallelism Tuning
+        ############################################################
+        runners:
+          eval_runners: 4
+          sqlgen_runners: 20
+
+        ############################################################
+        ### Scorer Related Configs
+        ############################################################
+        scorers:
+          llmrater:
+            model_config: autoctx/experiments/test-exp/eval_configs/llmrater_config.yaml
+
+        ############################################################
+        ### Reporting Related Configs
+        ############################################################
+        reporting:
+          csv:
+            output_directory: 'autoctx/experiments/test-exp/eval_reports/'
+    """).strip()
+
+    # Verify content written
+    m().write.assert_any_call(expected_db_config)
+    m().write.assert_any_call(expected_model_config)
+    m().write.assert_any_call(expected_llmrater_config)
+    m().write.assert_any_call(expected_run_config)
+    m().write.assert_any_call('[{"mock": "data"}]')

@@ -8,6 +8,10 @@ from google.cloud.db_context_enrichment.evaluate import (
     evaluate_generator,
     result_reader,
 )
+from google.cloud.db_context_enrichment.value_search import (
+    generator as value_search_generator,
+    match_templates,
+)
 
 mcp = FastMCP("Context Engineering Agent MCP")
 
@@ -57,7 +61,7 @@ def generate_evalbench_configs(
         dataset_path: The absolute path to the golden dataset file in the simplified user-facing format (JSON list of objects with keys: "id", "database", "nlq", "golden_sql").
         context_set_id: The specific context_set_id inside the experiment.
         toolbox_config_path: The absolute path to the tools.yaml configuration file.
-        toolbox_source_name: The name of the database source to use inside tools.yaml. The underlying source block must use a supported 'type' (cloud-sql-postgres, cloud-sql-mysql, spanner, alloydb-postgres).
+        toolbox_source_name: The name of the database source to use inside tools.yaml. The underlying source block must use a supported 'type' (cloud-sql-postgres, cloud-sql-mysql, spanner, alloydb-postgres, bigtable).
 
     Returns:
         A message indicating that the configuration files were successfully created.
@@ -191,6 +195,68 @@ async def read_evaluation_result(
         A string in markdown format containing the summary and failure cases.
     """
     return result_reader.read_eval_results(run_folder_path, offset, batch_size)
+
+
+@mcp.tool
+async def generate_value_searches(
+    value_search_inputs_json: str,
+    db_engine: str,
+    db_version: str | None = None,
+) -> str:
+    """
+    Generates final value searches from a list of user-approved value search definitions.
+
+    Args:
+        value_search_inputs_json: A JSON string representing a list of value search definitions.
+            Each item in the list should be a dictionary with keys:
+            - "table_name": The name of the table.
+            - "column_name": The name of the column.
+            - "concept_type": The semantic type (e.g., 'City').
+            - "match_function": The match function to use (e.g., 'EXACT_MATCH_STRINGS').
+            - "description": (Optional) A description of the value search.
+            
+            Example:
+            '[
+                {"table_name": "users", "column_name": "city", "concept_type": "City", "match_function": "EXACT_MATCH_STRINGS"},
+                {"table_name": "products", "column_name": "name", "concept_type": "Product", "match_function": "FUZZY_MATCH_STRINGS"}
+            ]'
+            
+        db_engine: The database engine (postgresql, mysql, etc.).
+        db_version: The database version (optional).
+        
+    Returns:
+        A JSON string representing a ContextSet object containing all the new value searches.
+    """
+    if db_version and not db_version.strip():
+        db_version = None
+    
+    return value_search_generator.generate_value_searches(
+        value_search_inputs_json, db_engine, db_version
+    )
+
+
+@mcp.tool
+def list_match_functions(db_engine: str, db_version: str | None = None) -> str:
+    """
+    Lists the valid match template functions with their descriptions and examples for a specific database engine.
+    Use this to show the user what 'match_function' options are available, along with their details.
+    
+    If the engine or version is not supported, this will return an error message
+    listing the valid options.
+
+    Args:
+        db_engine: The database engine (e.g., 'postgresql').
+        db_version: The specific database version (optional).
+    
+    Returns:
+        A JSON string containing a dictionary of available function names mapped to their descriptions and examples,
+        or an error message if validation fails.
+    """
+    try:
+        functions = match_templates.get_available_functions(db_engine, db_version)
+        return json.dumps(functions)
+    except ValueError as e:
+        return f"Error: {str(e)}"
 
 
 if __name__ == "__main__":
